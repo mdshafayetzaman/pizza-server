@@ -26,19 +26,48 @@ export async function connectToMongoDB() {
 }
 
 const connectionClient = await connectToMongoDB()
-const database = connectionClient.db('pizza-hut')
+
+const database = connectionClient.db('pizza-hub')
+
 const users = database.collection('user')
 const menuItems = database.collection('menuItems')
+
 console.log('MongoDB Connected')
 
 app.get('/', (req, res) => {
-  res.send({ msg: 'api is working' })
+  res.send({ msg: 'API is working' })
 })
+
 app.get('/users', async (req, res) => {
-  const cursor = users.find({})
-  const result = await cursor.toArray()
-  res.send(result)
+  try {
+    const result = await users.find({}).toArray()
+    res.send(result)
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to get users' })
+  }
 })
+
+app.get('/menuItem', async (req, res) => {
+  try {
+    const result = await menuItems.find({}).toArray()
+    res.send(result)
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to get menu items' })
+  }
+})
+
+app.post('/menuItem', async (req, res) => {
+  try {
+    const menu = req.body
+
+    const result = await menuItems.insertOne(menu)
+
+    res.send(result)
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to create menu item' })
+  }
+})
+
 app.listen(port, () => {
-  console.log(`server is running ${port}`)
+  console.log(`Server is running on port ${port}`)
 })
