@@ -1,258 +1,85 @@
+import http from 'http'
 import express from 'express'
 import cors from 'cors'
 import 'dotenv/config'
-import { MongoClient, ObjectId } from 'mongodb'
+import { connectDB } from './config/db.js'
+import menuRoutes from './routes/menu.js'
+import orderRoutes from './routes/orders.js'
+import userRoutes from './routes/users.js'
+import transactionRoutes from './routes/transactions.js'
+import subscriptionRoutes, { stripeWebhookHandler } from './routes/subscriptions.js'
+import dashboardRoutes from './routes/dashboards.js'
+import { sendError } from './utils/response.js'
 
 const app = express()
-
-app.use(express.json())
-app.use(cors())
-
 const port = process.env.PORT || 5001
 
-const client = new MongoClient(
-  `mongodb://${process.env.MONGO_DB_USER}:${process.env.MONGO_DB_PASS}@ac-djrpurl-shard-00-00.7xnwnzw.mongodb.net:27017,ac-djrpurl-shard-00-01.7xnwnzw.mongodb.net:27017,ac-djrpurl-shard-00-02.7xnwnzw.mongodb.net:27017/?ssl=true&replicaSet=atlas-viv4el-shard-0&authSource=admin`,
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  process.env.BETTER_AUTH_URL,
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3001',
+].filter(Boolean)
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true)
+      if (/^http:\/\/localhost:\d+$/.test(origin) || /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) {
+        return callback(null, true)
+      }
+      return callback(null, true) // Keep compatibility for deployed frontends; tighten via env if needed.
+    },
+    credentials: true,
+  })
 )
+
+app.post('/webhook/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler)
+app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler)
+
+app.use(express.json())
+app.use(express.urlencoded({ extended: true }))
+
+app.get('/', (req, res) => {
+  res.status(200).send({
+    success: true,
+    message: 'PizzaHub API is working',
+  })
+})
+
+app.get('/health', (req, res) => {
+  res.status(200).send({ success: true, status: 'ok' })
+})
+
+app.use(menuRoutes)
+app.use(orderRoutes)
+app.use(userRoutes)
+app.use(transactionRoutes)
+app.use(subscriptionRoutes)
+app.use(dashboardRoutes)
+
+app.use((req, res) => {
+  return sendError(res, 404, 'API route not found')
+})
+
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err)
+  if (res.headersSent) return next(err)
+  const status = err.status || 500
+  const message = status >= 500 ? 'Internal server error' : err.message || 'Request failed'
+  return sendError(res, status, message)
+})
 
 const startServer = async () => {
   try {
-    const connectionClient = await client.connect()
-
-    console.log('You successfully connected to MongoDB!')
-
-    const database = connectionClient.db('pizza-hub')
-
-    const users = database.collection('user')
-    const menuItems = database.collection('menuItems')
-
+    await connectDB()
     console.log('MongoDB Connected')
 
-    app.get('/', (req, res) => {
-      res.status(200).send({
-        success: true,
-        message: 'PizzaHub API is working',
-      })
-    })
-
-    app.get('/users', async (req, res) => {
-      try {
-        const result = await users.find({}).toArray()
-
-        res.status(200).send(result)
-      } catch (error) {
-        console.log(error)
-
-        res.status(500).send({
-          success: false,
-          message: 'Failed to get users',
-        })
-      }
-    })
-
-    app.get('/menuItem', async (req, res) => {
-      try {
-        const query = {}
-
-        if (req.query.menuType) {
-          query.menuType = req.query.menuType
-        }
-
-        if (req.query.category) {
-          query.category = req.query.category
-        }
-
-        if (req.query.search) {
-          query.pizzaName = {
-            $regex: req.query.search,
-            $options: 'i',
-          }
-        }
-
-        const result = await menuItems.find(query).toArray()
-
-        res.status(200).send(result)
-      } catch (error) {
-        console.log(error)
-
-        res.status(500).send({
-          success: false,
-          message: 'Failed to get menu items',
-        })
-      }
-    })
-
-    app.post('/menuItem', async (req, res) => {
-      try {
-        const menu = req.body
-
-        if (
-          !menu.pizzaName ||
-          !menu.category ||
-          menu.price === undefined ||
-          !menu.preparationTime ||
-          !menu.availableDate ||
-          !menu.imageUrl ||
-          !menu.description
-        ) {
-          return res.status(400).send({
-            success: false,
-            message: 'Please provide all menu information',
-          })
-        }
-
-        const price = Number(menu.price)
-
-        if (!Number.isFinite(price) || price < 0) {
-          return res.status(400).send({
-            success: false,
-            message: 'Please provide a valid price',
-          })
-        }
-
-        const newMenu = {
-          ...menu,
-          pizzaName: menu.pizzaName.trim(),
-          category: menu.category.trim(),
-          price,
-          createdAt: new Date(),
-        }
-
-        const result = await menuItems.insertOne(newMenu)
-
-        res.status(201).send({
-          success: true,
-          message: 'Menu item created successfully',
-          insertedId: result.insertedId,
-        })
-      } catch (error) {
-        console.log(error)
-
-        res.status(500).send({
-          success: false,
-          message: 'Failed to create menu item',
-        })
-      }
-    })
-
-    app.put('/menuItem/:id', async (req, res) => {
-      try {
-        const { id } = req.params
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({
-            success: false,
-            message: 'Invalid menu item ID',
-          })
-        }
-
-        const {
-          pizzaName,
-          category,
-          price,
-          preparationTime,
-          availableDate,
-          imageUrl,
-          description,
-        } = req.body
-
-        if (
-          !pizzaName?.trim() ||
-          !category?.trim() ||
-          price === undefined ||
-          !preparationTime ||
-          !availableDate ||
-          !imageUrl ||
-          !description?.trim()
-        ) {
-          return res.status(400).send({
-            success: false,
-            message: 'Please provide all menu information',
-          })
-        }
-
-        const numericPrice = Number(price)
-
-        if (!Number.isFinite(numericPrice) || numericPrice < 0) {
-          return res.status(400).send({
-            success: false,
-            message: 'Please provide a valid price',
-          })
-        }
-
-        const result = await menuItems.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              pizzaName: pizzaName.trim(),
-              category: category.trim(),
-              price: numericPrice,
-              preparationTime,
-              availableDate,
-              imageUrl,
-              description: description.trim(),
-              updatedAt: new Date(),
-            },
-          },
-        )
-
-        if (result.matchedCount === 0) {
-          return res.status(404).send({
-            success: false,
-            message: 'Menu item not found',
-          })
-        }
-
-        res.status(200).send({
-          success: true,
-          message: 'Menu item updated successfully',
-        })
-      } catch (error) {
-        console.log(error)
-
-        res.status(500).send({
-          success: false,
-          message: 'Failed to update menu item',
-        })
-      }
-    })
-
-    app.delete('/menuItem/:id', async (req, res) => {
-      try {
-        const { id } = req.params
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({
-            success: false,
-            message: 'Invalid menu item ID',
-          })
-        }
-
-        const result = await menuItems.deleteOne({
-          _id: new ObjectId(id),
-        })
-
-        if (result.deletedCount === 0) {
-          return res.status(404).send({
-            success: false,
-            message: 'Menu item not found',
-          })
-        }
-
-        res.status(200).send({
-          success: true,
-          message: 'Menu item deleted successfully',
-        })
-      } catch (error) {
-        console.log(error)
-
-        res.status(500).send({
-          success: false,
-          message: 'Failed to delete menu item',
-        })
-      }
-    })
-
-    app.listen(port, () => {
+    const maxHeaderSize = Number(process.env.MAX_HTTP_HEADER_SIZE || 32768)
+    const server = http.createServer({ maxHeaderSize }, app)
+    server.listen(port, () => {
       console.log(`Server is running on port ${port}`)
     })
   } catch (error) {
