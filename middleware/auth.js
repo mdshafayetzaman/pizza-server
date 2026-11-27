@@ -59,6 +59,7 @@ export async function getAuthenticatedUser(req) {
     const verified = await jwtVerify(token, jwks, {
       issuer: BETTER_AUTH_URL,
       audience: BETTER_AUTH_URL,
+      clockTolerance: 60,
     })
     payload = verified.payload
   } catch {
