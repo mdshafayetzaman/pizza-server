@@ -105,35 +105,49 @@ function roundMoney(n) { return Math.round((Number(n) + Number.EPSILON) * 100) /
 router.post('/orders', requireAuth(), requireRole('customer'), asyncHandler(async (req, res) => {
   const { orders } = collections()
   const body = req.body || {}
-  const itemId = String(body.itemId || body.menuItemId || body.menuId || '').trim()
-  const isRichOrder = body.size !== undefined || body.quantity !== undefined || body.phone !== undefined || body.city !== undefined || body.area !== undefined
 
-  // Backward-compatible legacy/simple order flow
+  const itemId = String(body.itemId || body.menuItemId || body.menuId || '').trim()
+  if (!itemId || !isValidObjectId(itemId)) {
+    return sendError(res, 400, 'A valid menu item ID is required')
+  }
+
+  const item = await getMenuItemByAnyId(itemId)
+  if (!item) return sendError(res, 404, 'Menu item not found')
+
+  const approvalStatus = String(item.approvalStatus || 'pending').toLowerCase()
+  const availability = String(item.availability || 'active').toLowerCase()
+  if (approvalStatus !== 'approved' || availability !== 'active') {
+    return sendError(res, 400, 'This menu item is not available for ordering')
+  }
+
+  const vendorId = String(item.vendorId || '').trim()
+  if (!vendorId) return sendError(res, 400, 'Menu item vendor information is missing')
+  if (vendorId === req.auth.id) return sendError(res, 403, 'Vendors cannot order their own items')
+
+  const dbItemName = String(item.itemName || item.pizzaName || item.name || '').trim()
+  const dbBasePrice = Number(item.price)
+  const dbImage = String(item.imageUrl || item.image || (Array.isArray(item.images) ? item.images[0] : '') || '')
+  const dbCategory = String(item.category || '')
+
+  if (!dbItemName || !Number.isFinite(dbBasePrice) || dbBasePrice < 0) {
+    return sendError(res, 400, 'Menu item data is invalid')
+  }
+
+  const isRichOrder = body.size !== undefined || body.quantity !== undefined || body.phone !== undefined || body.city !== undefined || body.area !== undefined
+  const now = new Date()
+
+  let doc
   if (!isRichOrder) {
     const deliveryDateRaw = body.deliveryDate || body.orderDate
     const deliveryAddress = body.deliveryAddress
-    const message = body.message ?? body.additionalMessage ?? body.notes ?? ''
+    const message = typeof body.message === 'string' ? body.message.trim() : typeof body.additionalMessage === 'string' ? body.additionalMessage.trim() : typeof body.notes === 'string' ? body.notes.trim() : ''
 
-    if (!itemId || !isValidObjectId(itemId)) return sendError(res, 400, 'Valid itemId is required')
     if (!deliveryDateRaw) return sendError(res, 400, 'deliveryDate is required')
     const deliveryDate = new Date(deliveryDateRaw)
     if (Number.isNaN(deliveryDate.getTime())) return sendError(res, 400, 'deliveryDate must be a valid date')
     if (deliveryAddress === undefined || deliveryAddress === null || (typeof deliveryAddress === 'string' && !deliveryAddress.trim())) {
       return sendError(res, 400, 'deliveryAddress is required')
     }
-
-    const item = await getMenuItemByAnyId(itemId)
-    if (!item) return sendError(res, 404, 'Menu item not found')
-
-    const approvalStatus = String(item.approvalStatus || 'pending').toLowerCase()
-    const availability = String(item.availability || 'active').toLowerCase()
-    if (approvalStatus !== 'approved' || availability !== 'active') {
-      return sendError(res, 400, 'This menu item is not available for ordering')
-    }
-
-    const vendorId = String(item.vendorId || '')
-    if (!vendorId) return sendError(res, 400, 'Menu item vendor information is missing')
-    if (vendorId === req.auth.id) return sendError(res, 403, 'Vendors cannot order their own items')
 
     const dayStart = new Date(deliveryDate)
     dayStart.setHours(0, 0, 0, 0)
@@ -151,8 +165,7 @@ router.post('/orders', requireAuth(), requireRole('customer'), asyncHandler(asyn
     })
     if (duplicate) return sendError(res, 409, 'You already have an active order for this item on the selected delivery date')
 
-    const now = new Date()
-    const doc = {
+    doc = {
       itemId,
       menuItemId: itemId,
       vendorId,
@@ -162,131 +175,120 @@ router.post('/orders', requireAuth(), requireRole('customer'), asyncHandler(asyn
       deliveryDate,
       orderDate: deliveryDate,
       deliveryAddress: typeof deliveryAddress === 'string' ? deliveryAddress.trim() : deliveryAddress,
-      message: typeof message === 'string' ? message.trim() : message,
-      additionalMessage: typeof message === 'string' ? message.trim() : message,
-      notes: typeof message === 'string' ? message.trim() : message,
+      message,
+      additionalMessage: message,
+      notes: message,
       status: 'pending',
       paymentStatus: 'unpaid',
-      itemName: item.itemName || item.pizzaName || item.name || '',
-      pizzaName: item.itemName || item.pizzaName || item.name || '',
-      price: Number(item.price ?? 0),
-      totalAmount: Number(item.price ?? 0),
+      itemName: dbItemName,
+      pizzaName: dbItemName,
+      imageUrl: dbImage,
+      pizzaImage: dbImage,
+      category: dbCategory,
+      price: roundMoney(dbBasePrice),
+      totalAmount: roundMoney(dbBasePrice),
       quantity: 1,
-      items: [{ menuItemId: itemId, name: item.itemName || item.pizzaName || item.name || '', quantity: 1, price: Number(item.price ?? 0) }],
+      items: [{ menuItemId: itemId, name: dbItemName, quantity: 1, price: roundMoney(dbBasePrice) }],
       createdAt: now,
       updatedAt: now,
     }
+  } else {
+    const customerName = String(body.customerName || req.auth.name || '').trim()
+    const customerEmail = String(body.customerEmail || req.auth.email || '').trim().toLowerCase()
+    const phone = String(body.phone || '').trim()
+    const address = String(body.deliveryAddress || '').trim()
+    const city = String(body.city || '').trim()
+    const area = String(body.area || '').trim()
+    const quantity = Number(body.quantity)
+    const size = String(body.size || '').trim()
+    const extraToppings = Array.isArray(body.extraToppings) ? body.extraToppings.map((t) => String(t).trim()).filter(Boolean) : []
+    const specialInstructions = String(body.specialInstructions || '').trim()
+    const deliveryDateRaw = body.deliveryDate || body.orderDate
 
-    const result = await orders.insertOne(doc)
-    const created = await orders.findOne({ _id: result.insertedId })
-    const [enriched] = await enrichOrders([created])
-    return res.status(201).send({ success: true, message: 'Order created successfully', insertedId: result.insertedId, data: enriched, order: enriched })
-  }
+    if (!customerName) return sendError(res, 400, 'Customer name is required')
+    if (!customerEmail) return sendError(res, 400, 'Email is required')
+    if (!phone) return sendError(res, 400, 'Phone number is required')
+    if (!address) return sendError(res, 400, 'Delivery address is required')
+    if (!city) return sendError(res, 400, 'City is required')
+    if (!area) return sendError(res, 400, 'Area is required')
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20) return sendError(res, 400, 'Quantity must be between 1 and 20')
+    if (!Object.prototype.hasOwnProperty.call(SIZE_MULTIPLIERS, size)) return sendError(res, 400, 'Invalid pizza size')
+    for (const t of extraToppings) {
+      if (!ALLOWED_TOPPINGS.has(t)) return sendError(res, 400, `Invalid topping: ${t}`)
+    }
 
-  // Rich customer order flow (browse menu -> order form)
-  const customerName = String(body.customerName || req.auth.name || '').trim()
-  const customerEmail = String(body.customerEmail || req.auth.email || '').trim().toLowerCase()
-  const phone = String(body.phone || '').trim()
-  const address = String(body.deliveryAddress || '').trim()
-  const city = String(body.city || '').trim()
-  const area = String(body.area || '').trim()
-  const quantity = Number(body.quantity)
-  const size = String(body.size || '').trim()
-  const extraToppings = Array.isArray(body.extraToppings) ? body.extraToppings.map((t) => String(t).trim()).filter(Boolean) : []
-  const specialInstructions = String(body.specialInstructions || '').trim()
+    const deliveryDate = deliveryDateRaw ? new Date(deliveryDateRaw) : null
+    if (deliveryDateRaw && Number.isNaN(deliveryDate.getTime())) return sendError(res, 400, 'deliveryDate must be a valid date')
 
-  if (!itemId) return sendError(res, 400, 'menuItemId is required')
-  if (!customerName) return sendError(res, 400, 'Customer name is required')
-  if (!customerEmail) return sendError(res, 400, 'Email is required')
-  if (!phone) return sendError(res, 400, 'Phone number is required')
-  if (!address) return sendError(res, 400, 'Delivery address is required')
-  if (!city) return sendError(res, 400, 'City is required')
-  if (!area) return sendError(res, 400, 'Area is required')
-  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20) return sendError(res, 400, 'Quantity must be between 1 and 20')
-  if (!Object.prototype.hasOwnProperty.call(SIZE_MULTIPLIERS, size)) return sendError(res, 400, 'Invalid pizza size')
-  for (const t of extraToppings) {
-    if (!ALLOWED_TOPPINGS.has(t)) return sendError(res, 400, `Invalid topping: ${t}`)
-  }
+    if (deliveryDate) {
+      const dayStart = new Date(deliveryDate)
+      dayStart.setHours(0, 0, 0, 0)
+      const dayEnd = new Date(dayStart)
+      dayEnd.setDate(dayEnd.getDate() + 1)
+      const duplicate = await orders.findOne({
+        customerId: req.auth.id,
+        itemId,
+        status: { $in: ['pending', 'accepted', 'confirmed', 'preparing', 'ready', 'out_for_delivery'] },
+        $or: [
+          { deliveryDate: { $gte: dayStart, $lt: dayEnd } },
+          { orderDate: { $gte: dayStart, $lt: dayEnd } },
+        ],
+      })
+      if (duplicate) return sendError(res, 409, 'You already have an active order for this item on the selected delivery date')
+    }
 
-  // Resolve menu item from DB when possible; fallback to provided snapshot for catalog/dummy items.
-  let item = null
-  if (isValidObjectId(itemId)) item = await getMenuItemByAnyId(itemId)
-  if (!item) item = await getMenuItemByAnyId(itemId)
+    const sizeMultiplier = SIZE_MULTIPLIERS[size]
+    const unitPrice = roundMoney(dbBasePrice * sizeMultiplier)
+    const toppingsTotal = roundMoney(extraToppings.length * TOPPING_PRICE)
+    const subtotal = roundMoney(unitPrice * quantity + toppingsTotal)
+    const deliveryCharge = roundMoney(DELIVERY_CHARGE)
+    const totalAmount = roundMoney(subtotal + deliveryCharge)
+    const fullAddress = `${address}, ${area}, ${city}`
 
-  let basePrice = Number(body.basePrice)
-  let pizzaName = String(body.pizzaName || '').trim()
-  let pizzaImage = String(body.pizzaImage || '').trim()
-  let category = String(body.category || '').trim()
-  let vendorId = ''
-
-  if (item) {
-    const approvalStatus = String(item.approvalStatus || 'pending').toLowerCase()
-    const availability = String(item.availability || 'active').toLowerCase()
-    if (item.vendorId && approvalStatus !== 'approved') return sendError(res, 400, 'This menu item is not available for ordering')
-    if (item.vendorId && availability !== 'active') return sendError(res, 400, 'This menu item is not available for ordering')
-    vendorId = String(item.vendorId || '')
-    if (vendorId && vendorId === req.auth.id) return sendError(res, 403, 'Vendors cannot order their own items')
-    basePrice = Number(item.price ?? basePrice)
-    pizzaName = String(item.itemName || item.pizzaName || item.name || pizzaName)
-    pizzaImage = String(item.imageUrl || item.image || (Array.isArray(item.images) ? item.images[0] : '') || pizzaImage)
-    category = String(item.category || category)
-  }
-
-  if (!pizzaName) return sendError(res, 400, 'Pizza name is required')
-  if (!Number.isFinite(basePrice) || basePrice <= 0) return sendError(res, 400, 'Invalid pizza price')
-
-  // Recalculate all prices on backend
-  const sizeMultiplier = SIZE_MULTIPLIERS[size]
-  const unitPrice = roundMoney(basePrice * sizeMultiplier)
-  const toppingsTotal = roundMoney(extraToppings.length * TOPPING_PRICE)
-  const subtotal = roundMoney(unitPrice * quantity + toppingsTotal)
-  const deliveryCharge = roundMoney(DELIVERY_CHARGE)
-  const totalAmount = roundMoney(subtotal + deliveryCharge)
-
-  const now = new Date()
-  const fullAddress = `${address}, ${area}, ${city}`
-  const doc = {
-    itemId,
-    menuItemId: itemId,
-    vendorId,
-    customerId: req.auth.id,
-    customerName,
-    customerEmail,
-    phone,
-    city,
-    area,
-    deliveryAddress: fullAddress,
-    address,
-    specialInstructions,
-    message: specialInstructions,
-    additionalMessage: specialInstructions,
-    notes: specialInstructions,
-    size,
-    extraToppings,
-    basePrice: roundMoney(basePrice),
-    unitPrice,
-    toppingsTotal,
-    subtotal,
-    deliveryCharge,
-    totalAmount,
-    quantity,
-    status: 'pending',
-    paymentStatus: 'unpaid',
-    itemName: pizzaName,
-    pizzaName,
-    pizzaImage,
-    imageUrl: pizzaImage,
-    category,
-    price: totalAmount,
-    items: [{ menuItemId: itemId, name: pizzaName, quantity, price: unitPrice, size, extraToppings, toppingsTotal }],
-    createdAt: now,
-    updatedAt: now,
+    doc = {
+      itemId,
+      menuItemId: itemId,
+      vendorId,
+      customerId: req.auth.id,
+      customerName,
+      customerEmail,
+      phone,
+      city,
+      area,
+      deliveryAddress: fullAddress,
+      address,
+      specialInstructions,
+      message: specialInstructions,
+      additionalMessage: specialInstructions,
+      notes: specialInstructions,
+      size,
+      extraToppings,
+      basePrice: roundMoney(dbBasePrice),
+      unitPrice,
+      toppingsTotal,
+      subtotal,
+      deliveryCharge,
+      totalAmount,
+      quantity,
+      status: 'pending',
+      paymentStatus: 'unpaid',
+      itemName: dbItemName,
+      pizzaName: dbItemName,
+      pizzaImage: dbImage,
+      imageUrl: dbImage,
+      category: dbCategory,
+      price: totalAmount,
+      items: [{ menuItemId: itemId, name: dbItemName, quantity, price: unitPrice, size, extraToppings, toppingsTotal }],
+      ...(deliveryDate ? { deliveryDate, orderDate: deliveryDate } : {}),
+      createdAt: now,
+      updatedAt: now,
+    }
   }
 
   const result = await orders.insertOne(doc)
   const created = await orders.findOne({ _id: result.insertedId })
   const [enriched] = await enrichOrders([created])
-  return res.status(201).send({ success: true, message: 'Order placed successfully', insertedId: result.insertedId, data: enriched, order: enriched })
+  return res.status(201).send({ success: true, message: 'Order created successfully', insertedId: result.insertedId, data: enriched, order: enriched })
 }))
 
 router.get('/orders', requireAuth(), asyncHandler(async (req, res) => {

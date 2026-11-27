@@ -62,16 +62,11 @@ export async function getAuthenticatedUser(req) {
     })
     payload = verified.payload
   } catch {
-    try {
-      const verified = await jwtVerify(token, jwks)
-      payload = verified.payload
-    } catch (error) {
-      return {
-        error: {
-          status: 401,
-          message: 'Invalid or expired token.',
-        },
-      }
+    return {
+      error: {
+        status: 401,
+        message: 'Invalid or expired token.',
+      },
     }
   }
 
@@ -85,8 +80,12 @@ export async function getAuthenticatedUser(req) {
     return { error: { status: 401, message: 'Authenticated user not found.' } }
   }
 
-  const role = normalizeRole(dbUser.role ?? payload.role)
+  const role = normalizeRole(dbUser.role)
   const isBlocked = Boolean(dbUser.isBlocked ?? dbUser.blocked ?? dbUser.status === 'blocked')
+  const rawPlan = String(dbUser.subscriptionPlan || 'free').toLowerCase()
+  const expiresAt = dbUser.subscriptionExpiresAt ? new Date(dbUser.subscriptionExpiresAt) : null
+  const premiumActive = rawPlan === 'premium' && (!expiresAt || (!Number.isNaN(expiresAt.getTime()) && expiresAt > new Date()))
+  const effectivePlan = premiumActive ? 'premium' : 'free'
 
   return {
     user: {
@@ -98,7 +97,7 @@ export async function getAuthenticatedUser(req) {
       role,
       isBlocked,
       businessName: dbUser.businessName || '',
-      subscriptionPlan: dbUser.subscriptionPlan || 'free',
+      subscriptionPlan: effectivePlan,
       subscriptionExpiresAt: dbUser.subscriptionExpiresAt || null,
       raw: dbUser,
     },

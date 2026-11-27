@@ -16,7 +16,10 @@ router.get('/dashboard/vendor', requireAuth(), requireRole('vendor'), asyncHandl
     users.findOne({ _id: req.auth._id }),
   ])
 
-  const plan = String(user?.subscriptionPlan || 'free').toLowerCase() === 'premium' ? 'premium' : 'free'
+  const rawPlan = String(user?.subscriptionPlan || 'free').toLowerCase()
+  const expiresAt = user?.subscriptionExpiresAt ? new Date(user.subscriptionExpiresAt) : null
+  const premiumActive = rawPlan === 'premium' && (!expiresAt || (!Number.isNaN(expiresAt.getTime()) && expiresAt > new Date()))
+  const plan = premiumActive ? 'premium' : 'free'
   const data = {
     totalMenuItems,
     activeMenuItems,

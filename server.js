@@ -14,25 +14,39 @@ import { sendError } from './utils/response.js'
 const app = express()
 const port = process.env.PORT || 5001
 
-const allowedOrigins = [
+const configuredOrigins = [
   process.env.CLIENT_URL,
   process.env.BETTER_AUTH_URL,
+  process.env.FRONTEND_URL,
+  process.env.PRODUCTION_FRONTEND_URL,
+  ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : []),
+]
+  .map((origin) => String(origin || '').trim())
+  .filter(Boolean)
+
+const devOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   'http://localhost:3001',
   'http://127.0.0.1:3001',
-].filter(Boolean)
+]
+
+const allowedOrigins = new Set([...configuredOrigins, ...devOrigins])
+const isProduction = process.env.NODE_ENV === 'production'
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) return callback(null, true)
-      if (/^http:\/\/localhost:\d+$/.test(origin) || /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) {
+      if (!origin) return callback(null, true)
+      if (allowedOrigins.has(origin)) return callback(null, true)
+      if (!isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
         return callback(null, true)
       }
-      return callback(null, true) // Keep compatibility for deployed frontends; tighten via env if needed.
+      return callback(null, false)
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 )
 

@@ -56,6 +56,18 @@ async function ensureCollections(db) {
       console.log(`Created ${name} collection`)
     }
   }
+
+  try {
+    await db.collection('menuItems').createIndex({ vendorId: 1, createdAt: -1 })
+    await db.collection('menuItems').createIndex({ approvalStatus: 1, availability: 1 })
+    await db.collection('orders').createIndex({ customerId: 1, createdAt: -1 })
+    await db.collection('orders').createIndex({ vendorId: 1, createdAt: -1 })
+    await db.collection('orders').createIndex({ itemId: 1, customerId: 1, status: 1 })
+    await db.collection('transactions').createIndex({ stripeSessionId: 1 }, { unique: true, sparse: true })
+    await db.collection('transactions').createIndex({ vendorId: 1, createdAt: -1 })
+  } catch (error) {
+    console.error('Index creation warning:', error.message)
+  }
 }
 
 async function migrateLegacyBusinessData(db, legacyDb) {
