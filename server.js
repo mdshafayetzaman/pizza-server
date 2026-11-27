@@ -14,6 +14,11 @@ import { sendError } from './utils/response.js'
 const app = express()
 const port = process.env.PORT || 5001
 
+const requiredOrigins = [
+  'http://localhost:3000',
+  'https://pizza-client-lyart.vercel.app',
+]
+
 const configuredOrigins = [
   process.env.CLIENT_URL,
   process.env.BETTER_AUTH_URL,
@@ -21,7 +26,7 @@ const configuredOrigins = [
   process.env.PRODUCTION_FRONTEND_URL,
   ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : []),
 ]
-  .map((origin) => String(origin || '').trim())
+  .map((origin) => String(origin || '').trim().replace(/\/+$/, ''))
   .filter(Boolean)
 
 const devOrigins = [
@@ -31,24 +36,43 @@ const devOrigins = [
   'http://127.0.0.1:3001',
 ]
 
-const allowedOrigins = new Set([...configuredOrigins, ...devOrigins])
+const allowedOrigins = new Set([...requiredOrigins, ...configuredOrigins, ...devOrigins])
 const isProduction = process.env.NODE_ENV === 'production'
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true)
-      if (allowedOrigins.has(origin)) return callback(null, true)
-      if (!isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-        return callback(null, true)
-      }
-      return callback(null, false)
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-)
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow non-browser/server-to-server requests with no Origin header.
+    if (!origin) return callback(null, true)
+
+    const normalized = String(origin).trim().replace(/\/+$/, '')
+    if (allowedOrigins.has(normalized)) return callback(null, true)
+
+    // In non-production, allow any localhost/127.0.0.1 port for dev convenience.
+    if (!isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalized)) {
+      return callback(null, true)
+    }
+
+    console.warn('CORS blocked origin:', normalized)
+    return callback(null, false)
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204,
+}
+
+app.use(cors(corsOptions))
+app.options(/(.*)/, cors(corsOptions))
+
+// Ensure DB connection for serverless environments (e.g. Vercel).
+app.use(async (_req, _res, next) => {
+  try {
+    await connectDB()
+    next()
+  } catch (error) {
+    next(error)
+  }
+})
 
 app.post('/webhook/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler)
 app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler)
@@ -102,5 +126,8 @@ const startServer = async () => {
   }
 }
 
-startServer()
+if (!process.env.VERCEL) {
+  startServer()
+}
+
 export default app;

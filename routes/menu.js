@@ -44,6 +44,13 @@ function normalizeMenuItem(doc = {}) {
     isAvailable: availability === 'active' || availability === true,
     preparationTime: doc.preparationTime || '',
     availableDate: doc.availableDate || '',
+    rating: Number(doc.rating ?? 4.5),
+    reviews: Number(doc.reviews ?? 0),
+    popular: Boolean(doc.popular),
+    toppings: Array.isArray(doc.toppings) ? doc.toppings : [],
+    calories: Number(doc.calories ?? 0),
+    isDemo: Boolean(doc.isDemo),
+    demoKey: doc.demoKey || '',
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
   }
@@ -206,10 +213,22 @@ router.get('/menuItem/admin/all', requireAuth(), requireRole('admin'), asyncHand
 
 router.get('/menuItem/:id', optionalAuth(), asyncHandler(async (req, res) => {
   const { menuItems } = collections()
-  const { id } = req.params
-  if (!isValidObjectId(id)) return sendError(res, 400, 'Invalid menu item ID')
+  const rawId = String(req.params.id || '').trim()
+  if (!rawId) return sendError(res, 400, 'Menu item ID is required')
 
-  const item = await menuItems.findOne({ _id: new ObjectId(id) })
+  let item = null
+  if (isValidObjectId(rawId)) {
+    item = await menuItems.findOne({ _id: new ObjectId(rawId) })
+  } else {
+    // Support legacy/numeric IDs used by older clients or seeded data.
+    const numericId = Number(rawId)
+    const or = [{ id: rawId }, { legacyId: rawId }]
+    if (Number.isFinite(numericId)) {
+      or.push({ id: numericId }, { legacyId: numericId })
+    }
+    item = await menuItems.findOne({ $or: or })
+  }
+
   if (!item) return sendError(res, 404, 'Menu item not found')
 
   const normalized = normalizeMenuItem(item)

@@ -1,4 +1,5 @@
 import { MongoClient } from 'mongodb'
+import { seedDemoMenuItems } from '../utils/seedDemoMenuItems.js'
 
 const mongoUri =
   process.env.MONGO_DB_URL ||
@@ -21,6 +22,7 @@ export async function connectDB() {
 
   await ensureCollections(database)
   await migrateLegacyBusinessData(database, legacyDatabase)
+  await seedDemoMenuItems(database)
 
   return database
 }

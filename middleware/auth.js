@@ -127,10 +127,12 @@ function isJwksOrConfigError(err) {
 export async function getAuthenticatedUser(req) {
   const token = getBearerToken(req)
   if (!token) {
+    console.warn('Auth failed: missing Bearer token', { path: req?.originalUrl || req?.url, method: req?.method })
     return { error: { status: 401, message: 'Authentication required. Please sign in.' } }
   }
 
   if (!isLikelyJwt(token)) {
+    console.warn('Auth failed: non-JWT Bearer token format', { path: req?.originalUrl || req?.url, method: req?.method })
     return {
       error: {
         status: 401,
@@ -142,6 +144,7 @@ export async function getAuthenticatedUser(req) {
   try {
     decodeProtectedHeader(token)
   } catch {
+    console.warn('Auth failed: malformed JWT header', { path: req?.originalUrl || req?.url, method: req?.method })
     return { error: { status: 401, message: 'Invalid or malformed authentication token.' } }
   }
 
@@ -159,8 +162,23 @@ export async function getAuthenticatedUser(req) {
   } catch (err) {
     const code = String(err?.code || '')
     const name = String(err?.name || '')
+    const claim = typeof err?.claim === 'string' ? err.claim : undefined
+    const reason = typeof err?.reason === 'string' ? err.reason : undefined
+    const safeMeta = {
+      code,
+      name,
+      message: String(err?.message || ''),
+      claim,
+      reason,
+      path: req?.originalUrl || req?.url,
+      method: req?.method,
+      expectedIssuer: issuer,
+      expectedAudience: audience,
+      jwksUrl: JWKS_URL,
+    }
     if (isJwtValidationError(err)) {
       const expired = code === 'ERR_JWT_EXPIRED' || name === 'JWTExpired'
+      console.warn('Auth JWT validation failed:', safeMeta)
       return {
         error: {
           status: 401,
@@ -169,7 +187,7 @@ export async function getAuthenticatedUser(req) {
       }
     }
     if (isJwksOrConfigError(err)) {
-      console.error('Auth JWKS/config error:', { code: err?.code, name: err?.name, message: err?.message, jwksUrl: JWKS_URL })
+      console.error('Auth JWKS/config error:', safeMeta)
       return {
         error: {
           status: 500,
@@ -177,12 +195,13 @@ export async function getAuthenticatedUser(req) {
         },
       }
     }
-    console.error('Auth token verification error:', { code: err?.code, name: err?.name, message: err?.message })
+    console.error('Auth token verification error:', safeMeta)
     return { error: { status: 401, message: 'Authentication token verification failed.' } }
   }
 
   const userId = getUserIdFromPayload(payload)
   if (!userId) {
+    console.warn('Auth failed: missing user identifier in JWT payload', { path: req?.originalUrl || req?.url, method: req?.method })
     return { error: { status: 401, message: 'Invalid token payload: missing user identifier.' } }
   }
 
@@ -190,11 +209,12 @@ export async function getAuthenticatedUser(req) {
   try {
     dbUser = await findUserById(userId)
   } catch (err) {
-    console.error('Auth user lookup error:', { message: err?.message, code: err?.code })
+    console.error('Auth user lookup error:', { message: err?.message, code: err?.code, path: req?.originalUrl || req?.url, method: req?.method })
     return { error: { status: 500, message: 'Authentication user lookup failed.' } }
   }
 
   if (!dbUser) {
+    console.warn('Auth failed: authenticated user not found in DB', { path: req?.originalUrl || req?.url, method: req?.method, userId: String(userId) })
     return { error: { status: 401, message: 'Authenticated user not found.' } }
   }
 
