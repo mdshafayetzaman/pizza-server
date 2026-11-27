@@ -68,11 +68,16 @@ const createCheckoutSessionHandler = asyncHandler(async (req, res) => {
   const user = await users.findOne({ _id: req.auth._id })
   if (!user) return sendError(res, 404, 'User not found')
 
-  const origin = req.headers.origin || process.env.CLIENT_URL || 'http://localhost:3000'
-  const successUrl = process.env.STRIPE_SUCCESS_URL || `${origin}/dashboard/vendor/subscription?success=true&session_id={CHECKOUT_SESSION_ID}`
-  const cancelUrl = process.env.STRIPE_CANCEL_URL || `${origin}/dashboard/vendor/subscription?cancelled=true`
+  const frontendBase = (
+    process.env.CLIENT_URL ||
+    process.env.FRONTEND_URL ||
+    process.env.PRODUCTION_FRONTEND_URL ||
+    'https://pizza-client-lyart.vercel.app'
+  ).replace(/\/+$/, '')
+  const successUrl = process.env.STRIPE_SUCCESS_URL || `${frontendBase}/dashboard/vendor/subscription?success=true&session_id={CHECKOUT_SESSION_ID}`
+  const cancelUrl = process.env.STRIPE_CANCEL_URL || `${frontendBase}/dashboard/vendor/subscription?cancelled=true`
 
-  const priceId = process.env.STRIPE_PREMIUM_PRICE_ID
+  const priceId = process.env.STRIPE_PREMIUM_PRICE_ID || process.env.STRIPE_PRICE_ID
   const amount = Number(process.env.STRIPE_PREMIUM_AMOUNT || 999)
   const currency = process.env.STRIPE_CURRENCY || 'usd'
 
@@ -88,27 +93,54 @@ const createCheckoutSessionHandler = asyncHandler(async (req, res) => {
         quantity: 1,
       }]
 
-  const session = await stripe.checkout.sessions.create({
-    mode: 'subscription',
-    payment_method_types: ['card'],
-    line_items: lineItems,
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-    customer_email: user.email,
-    client_reference_id: user._id.toString(),
-    metadata: {
-      vendorId: user._id.toString(),
-      userId: user._id.toString(),
-      plan: 'premium',
-    },
-    subscription_data: {
+  let session
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: lineItems,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      customer_email: user.email || undefined,
+      client_reference_id: user._id.toString(),
       metadata: {
         vendorId: user._id.toString(),
         userId: user._id.toString(),
         plan: 'premium',
       },
-    },
-  })
+      subscription_data: {
+        metadata: {
+          vendorId: user._id.toString(),
+          userId: user._id.toString(),
+          plan: 'premium',
+        },
+      },
+    })
+  } catch (error) {
+    const stripeCode = error?.code || error?.raw?.code
+    const stripeType = error?.type || error?.raw?.type
+    const statusCode = Number(error?.statusCode || error?.raw?.statusCode) || 500
+    console.error('Stripe checkout session creation failed:', {
+      message: error?.message,
+      type: stripeType,
+      code: stripeCode,
+      statusCode,
+      vendorId: user._id.toString(),
+      hasPriceId: Boolean(priceId),
+      endpoint: req.originalUrl,
+    })
+
+    const clientMessage =
+      statusCode >= 400 && statusCode < 500
+        ? `Stripe checkout request failed: ${error?.message || 'Invalid Stripe configuration or request.'}`
+        : 'Failed to create Stripe checkout session. Please check Stripe server configuration.'
+
+    return sendError(res, statusCode >= 400 && statusCode < 600 ? statusCode : 500, clientMessage)
+  }
+
+  if (!session?.url) {
+    console.error('Stripe checkout session created without URL:', { sessionId: session?.id, vendorId: user._id.toString() })
+    return sendError(res, 500, 'Stripe checkout session was created but no checkout URL was returned.')
+  }
 
   res.status(200).send({ success: true, url: session.url, sessionId: session.id, data: { url: session.url, sessionId: session.id } })
 })
