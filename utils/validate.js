@@ -38,6 +38,18 @@ export function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+export function isValidHttpUrl(value) {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  try {
+    const url = new URL(trimmed)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export function toNumber(value) {
   const num = Number(value)
   return Number.isFinite(num) ? num : null

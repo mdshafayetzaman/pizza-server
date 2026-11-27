@@ -3,7 +3,7 @@ import { ObjectId } from 'mongodb'
 import { collections } from '../config/db.js'
 import { optionalAuth, requireAuth, requireRole } from '../middleware/auth.js'
 import { asyncHandler, sendError } from '../utils/response.js'
-import { escapeRegex, isValidObjectId, parsePagination, toNumber } from '../utils/validate.js'
+import { escapeRegex, isValidHttpUrl, isValidObjectId, parsePagination, toNumber } from '../utils/validate.js'
 
 const router = express.Router()
 
@@ -230,11 +230,20 @@ router.post('/menuItem', requireAuth(), requireRole('vendor'), asyncHandler(asyn
   const description = String(body.description || '').trim()
   const location = String(body.location || '').trim()
   const imageUrl = String(body.imageUrl || body.image || (Array.isArray(body.images) ? body.images[0] : '') || '').trim()
-  const images = Array.isArray(body.images) ? body.images.filter((i) => typeof i === 'string' && i.trim()) : imageUrl ? [imageUrl] : []
+  let images = Array.isArray(body.images)
+    ? body.images.filter((i) => typeof i === 'string' && i.trim()).map((i) => i.trim())
+    : imageUrl ? [imageUrl] : []
+  if (images.length === 0 && imageUrl) images = [imageUrl]
   const price = toNumber(body.price)
 
-  if (!itemName || !category || !description || !location || images.length === 0 || price === null) {
-    return sendError(res, 400, 'Please provide all required menu item fields: itemName, category, description, price, location, images')
+  if (!itemName || !category || !description || !location || !imageUrl || price === null) {
+    return sendError(res, 400, 'Please provide all required fields: itemName, category, description, price, location, and image')
+  }
+  if (!isValidHttpUrl(imageUrl)) {
+    return sendError(res, 400, 'Image must be a valid HTTP/HTTPS URL')
+  }
+  if (images.some((img) => !isValidHttpUrl(img))) {
+    return sendError(res, 400, 'All image URLs must be valid HTTP/HTTPS URLs')
   }
   if (price < 0) return sendError(res, 400, 'Price must be a valid non-negative number')
 
